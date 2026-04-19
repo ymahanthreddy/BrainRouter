@@ -111,7 +111,7 @@ router.get('/history', async (req, res) => {
     // Fetch ALL documents regardless of userId to debug
     const allDocs = await PromptHistory.find().lean();
     console.log('📊 Total documents in DB:', allDocs.length);
-    console.log('📋 All doc IDs:', allDocs.map((d: any) => ({ id: d.id, userId: d.userId })));
+    console.log('📋 All doc IDs:', allDocs.map(d => ({ id: d.id, userId: d.userId })));
 
     // Try both - with and without userId filter
     const withUserFilter = await PromptHistory
