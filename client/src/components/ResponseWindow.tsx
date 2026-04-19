@@ -23,6 +23,7 @@ interface ResponseWindowProps {
   onClose?: (id: string) => void
   judgeAnalysis?: string
   onMessageSent?: (prompt: string, chatId: string) => void
+  followUps?: Array<{ prompt: string; timestamp: string }>
 }
 
 export function ResponseWindow({
@@ -31,7 +32,8 @@ export function ResponseWindow({
   responses,
   onClose,
   judgeAnalysis,
-  onMessageSent
+  onMessageSent,
+  followUps = []
 }: ResponseWindowProps) {
   const [isListening, setIsListening] = useState(false)
   const [selectedLang, setSelectedLang] = useState('en')
@@ -41,6 +43,9 @@ export function ResponseWindow({
   const [userChoiceSubmitted, setUserChoiceSubmitted] = useState(false)
   const [currentView, setCurrentView] = useState<'chat' | string>('chat')
   const [chatInput, setChatInput] = useState('')
+  const [hideJudgeAnalysis, setHideJudgeAnalysis] = useState(false)
+  const [hideUserFeedback, setHideUserFeedback] = useState(false)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const topModel = responses && responses.length > 0 ? responses.sort((a, b) => b.score - a.score)[0] : null;
 
@@ -79,20 +84,51 @@ export function ResponseWindow({
 
   const isLoading = responses.length === 0;
 
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  // Load follow-ups into messages on mount
+  useEffect(() => {
+    if (followUps && followUps.length > 0) {
+      setMessages(prev => {
+        let updated = [...prev]
+        followUps.forEach(followUp => {
+          // Add user message
+          if (!updated.some(m => m.role === 'user' && m.content === followUp.prompt)) {
+            updated.push({ role: 'user', content: followUp.prompt })
+
+            // Add response if available
+            if (followUp.responses && followUp.responses.length > 0) {
+              const topResp = followUp.responses.sort((a: any, b: any) => b.score - a.score)[0]
+              updated.push({
+                role: 'assistant',
+                content: `🏆 #1 Ranked: ${topResp.model} (Score: ${topResp.score}/10)`,
+                model: topResp.model
+              })
+              updated.push({
+                role: 'assistant',
+                content: topResp.text,
+                model: topResp.model,
+                isResponse: true
+              })
+            }
+          }
+        })
+        return updated
+      })
+    }
+  }, [followUps.length])
+
   // Sync responses to messages when new responses arrive
   useEffect(() => {
     if (responses.length > 0) {
       const topModel = responses.sort((a, b) => b.score - a.score)[0]
+      const lastMsg = messages[messages.length - 1]
 
-      // Check if we already have responses for the latest user message
-      const userMessages = messages.filter(m => m.role === 'user')
-      const lastUserMsg = userMessages[userMessages.length - 1]
-      const hasResponseForLastMsg = messages.some((m, i) =>
-        m.role === 'assistant' && m.isResponse &&
-        messages[i - 1]?.content === lastUserMsg?.content
-      )
-
-      if (lastUserMsg && !hasResponseForLastMsg) {
+      // Only add responses if last message is a user message (not already a response)
+      if (lastMsg?.role === 'user') {
         const responseMessage: Message = {
           role: 'assistant',
           content: `🏆 #1 Ranked: ${topModel.model} (Score: ${topModel.score}/10)`,
@@ -110,29 +146,19 @@ export function ResponseWindow({
         setUserChoiceSubmitted(false)
       }
 
-      // Update conversations with all responses
+      // Update conversations
       setConversations(prev => {
         const updated = { ...prev }
-        const lastUserMsg = messages.filter(m => m.role === 'user').pop()
-        if (lastUserMsg) {
-          responses.forEach((resp) => {
-            if (!updated[resp.model]) {
-              updated[resp.model] = [
-                { role: 'user', content: prompt },
-                { role: 'assistant', content: resp.text, model: resp.model, isResponse: true }
-              ]
-            } else {
-              updated[resp.model] = [...updated[resp.model],
-                { role: 'user', content: lastUserMsg.content },
-                { role: 'assistant', content: resp.text, model: resp.model, isResponse: true }
-              ]
-            }
-          })
-        }
+        responses.forEach((resp) => {
+          updated[resp.model] = [
+            { role: 'user', content: prompt },
+            { role: 'assistant', content: resp.text, model: resp.model, isResponse: true }
+          ]
+        })
         return updated
       })
     }
-  }, [responses])
+  }, [responses, prompt])
 
   const rankedModels = [...responses]
     .sort((a, b) => b.score - a.score)
@@ -204,6 +230,22 @@ export function ResponseWindow({
 
   const handleSubmitUserChoice = async () => {
     if (!selectedModel) return
+
+    try {
+      await fetch('/api/ai/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId: id,
+          preferredModel: selectedModel,
+          judgeAnalysis: judgeAnalysis,
+          timestamp: new Date().toISOString()
+        })
+      }).catch(() => {}) // Silent fail on feedback save
+    } catch (error) {
+      console.error('Error saving feedback:', error)
+    }
+
     console.log('✓ User preference recorded:', selectedModel)
     setUserChoiceSubmitted(true)
     setTimeout(() => {
@@ -322,23 +364,70 @@ export function ResponseWindow({
                 {currentView === 'chat' ? 'Compare responses from all models' : `Response from ${currentView}`}
               </p>
             </div>
-            {onClose && (
-              <motion.button
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
-                onClick={() => onClose(id)}
-                className="flex-shrink-0 p-2 hover:bg-purple-500/20 rounded-lg transition-colors flex items-center gap-2"
-                title="Back to chat"
-              >
-                <ArrowLeft size={20} className="text-purple-300" />
-              </motion.button>
-            )}
+            <div className="flex-shrink-0 flex items-center gap-2">
+              {currentView === 'chat' && (
+                <>
+                  {hideJudgeAnalysis && (
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      onClick={() => setHideJudgeAnalysis(false)}
+                      className="text-xs px-2 py-1 rounded bg-purple-500/20 border border-purple-400/40 hover:bg-purple-500/30 transition-colors text-purple-300"
+                      title="Show judge analysis"
+                    >
+                      📊 Analysis
+                    </motion.button>
+                  )}
+                  {hideUserFeedback && (
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      onClick={() => setHideUserFeedback(false)}
+                      className="text-xs px-2 py-1 rounded bg-blue-500/20 border border-blue-400/40 hover:bg-blue-500/30 transition-colors text-blue-300"
+                      title="Show user feedback"
+                    >
+                      👍 Feedback
+                    </motion.button>
+                  )}
+                </>
+              )}
+              {onClose && (
+                <motion.button
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.9 }}
+                  onClick={() => onClose(id)}
+                  className="flex-shrink-0 p-2 hover:bg-purple-500/20 rounded-lg transition-colors flex items-center gap-2"
+                  title="Back to chat"
+                >
+                  <ArrowLeft size={20} className="text-purple-300" />
+                </motion.button>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Messages Area */}
         {currentView === 'chat' ? (
           <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Unhide Buttons */}
+            {(hideJudgeAnalysis || hideUserFeedback) && (
+              <div className="px-6 pt-3 pb-2 flex gap-2 flex-wrap">
+                {hideJudgeAnalysis && (
+                  <button
+                    onClick={() => setHideJudgeAnalysis(false)}
+                    className="text-xs text-purple-300 hover:text-purple-200 underline"
+                  >
+                    Show Analysis
+                  </button>
+                )}
+                {hideUserFeedback && (
+                  <button
+                    onClick={() => setHideUserFeedback(false)}
+                    className="text-xs text-blue-300 hover:text-blue-200 underline"
+                  >
+                    Show Feedback
+                  </button>
+                )}
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gradient-to-b from-gray-900/50 to-gray-950">
               {messages.map((msg, idx) => (
                 <motion.div
@@ -390,32 +479,49 @@ export function ResponseWindow({
                   </div>
                 </motion.div>
               )}
+              <div ref={messagesEndRef} />
             </div>
 
             {/* Judge Analysis */}
-            {judgeAnalysis && messages.length > 1 && (
+            {judgeAnalysis && messages.length > 1 && !hideJudgeAnalysis && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="border-t border-purple-500/20 bg-gradient-to-r from-purple-900/30 to-blue-900/30 p-4 backdrop-blur-sm flex-shrink-0"
               >
-                <p className="text-xs uppercase tracking-wide text-purple-300 font-semibold mb-2">
-                  Judge Analysis
-                </p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs uppercase tracking-wide text-purple-300 font-semibold">
+                    Judge Analysis
+                  </p>
+                  <button
+                    onClick={() => setHideJudgeAnalysis(true)}
+                    className="text-xs text-purple-300 hover:text-purple-200 px-2 py-1 rounded hover:bg-purple-500/20 transition-colors"
+                  >
+                    Hide
+                  </button>
+                </div>
                 <p className="text-sm text-gray-100 leading-relaxed">{judgeAnalysis}</p>
               </motion.div>
             )}
 
             {/* User Choice Box */}
             <AnimatePresence>
-              {showUserChoice && !userChoiceSubmitted && (
+              {showUserChoice && !userChoiceSubmitted && !hideUserFeedback && (
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 20 }}
                   className="border-t border-purple-500/20 bg-gradient-to-r from-purple-900/30 to-blue-900/30 p-4 backdrop-blur-sm flex-shrink-0"
                 >
-                  <p className="text-sm font-semibold text-white mb-3">Which response do you prefer as #1?</p>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-sm font-semibold text-white">Which response do you prefer as #1?</p>
+                    <button
+                      onClick={() => setHideUserFeedback(true)}
+                      className="text-xs text-purple-300 hover:text-purple-200 px-2 py-1 rounded hover:bg-purple-500/20 transition-colors"
+                    >
+                      Hide
+                    </button>
+                  </div>
                   <div className="space-y-2 mb-4 max-h-40 overflow-y-auto">
                     {responses.map((resp) => (
                       <label key={resp.model} className="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-white/10 transition-all">

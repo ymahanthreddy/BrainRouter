@@ -22,6 +22,7 @@ interface SidebarProps {
   onMinimizedChange?: (minimized: boolean) => void
   onDeleteChat?: (id: string) => void
   onRefresh?: () => void
+  isViewingChat?: boolean
 }
 
 export function Sidebar({
@@ -36,7 +37,8 @@ export function Sidebar({
   chatHistory = [],
   onMinimizedChange,
   onDeleteChat,
-  onRefresh
+  onRefresh,
+  isViewingChat
 }: SidebarProps) {
   const [loading, setLoading] = useState(false)
   const [isMinimized, setIsMinimized] = useState(false)
@@ -322,7 +324,7 @@ export function Sidebar({
 
             {/* Guest Menu Dropdown */}
             <AnimatePresence>
-              {showProfileMenu && !isMinimized && (
+              {showProfileMenu && !isMinimized && !isViewingChat && (
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}

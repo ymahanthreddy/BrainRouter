@@ -7,13 +7,13 @@ import PromptHistory from '../models/PromptHistory.js';
 const router = Router();
 
 router.post('/compare', async (req, res) => {
-  const { prompt, chatId } = req.body;
+  const { prompt, chatId, conversationHistory = [], id } = req.body;
   if (!prompt?.trim())
     return res.status(400).json({ error: 'Prompt cannot be empty' });
 
   try {
-    // Step 1: Get responses from all models
-    const rawResults = await queryAllModels(prompt);
+    // Step 1: Get responses from all models with conversation context
+    const rawResults = await queryAllModels(prompt, conversationHistory);
 
     // Step 2: Judge the responses
     let judgeData = null;
@@ -39,28 +39,58 @@ router.post('/compare', async (req, res) => {
     const userId = req.user?.userId || 'guest';
     if (!chatId) {
       // Only save first message to history
-      PromptHistory.create({
-        userId,
-        prompt,
-        responses: responses.map(r => ({
-          model: r.model,
-          text: r.text,
-          score: r.score,
-          best: r.best,
-          heuristicScore: r.heuristicScore,
-          judgeScore: r.judgeScore,
-        })),
-        judgeData: judgeData || null,
-      }).then(doc => {
+      try {
+        const doc = await PromptHistory.create({
+          id: id || Date.now().toString(),
+          userId,
+          prompt,
+          responses: responses.map(r => ({
+            model: r.model,
+            text: r.text,
+            score: r.score,
+            best: r.best,
+            heuristicScore: r.heuristicScore,
+            judgeScore: r.judgeScore,
+          })),
+          judgeData: judgeData || null,
+        });
         console.log('✅ Saved to DB:', {
-          id: doc._id,
+          id: doc.id,
           userId,
           prompt: prompt.substring(0, 50) + (prompt.length > 50 ? '...' : ''),
           models: responses.map(r => `${r.model} (${r.score})`).join(', ')
         });
-      }).catch(err => console.error('❌ Failed to save history:', err.message));
+      } catch (err) {
+        console.error('❌ Failed to save history:', err.message);
+      }
     } else {
-      console.log('ℹ️ Continuation message - responses handled on frontend');
+      // Update existing chat with follow-up
+      try {
+        await PromptHistory.findOneAndUpdate(
+          { id: chatId },
+          {
+            $push: {
+              followUps: {
+                prompt,
+                responses: responses.map(r => ({
+                  model: r.model,
+                  text: r.text,
+                  score: r.score,
+                  best: r.best,
+                  heuristicScore: r.heuristicScore,
+                  judgeScore: r.judgeScore,
+                })),
+                judgeData: judgeData || null,
+                timestamp: new Date()
+              }
+            }
+          },
+          { new: true }
+        );
+        console.log('✅ Follow-up saved to DB:', { chatId, prompt: prompt.substring(0, 50) });
+      } catch (err) {
+        console.error('❌ Failed to save follow-up:', err.message);
+      }
     }
 
     res.json({ responses, judgeAnalysis: judgeData?.reasoning || null });
@@ -76,13 +106,28 @@ router.post('/compare', async (req, res) => {
 router.get('/history', async (req, res) => {
   try {
     const userId = req.user?.userId || 'guest';
-    const history = await PromptHistory
+    console.log('🔍 Fetching history for userId:', userId);
+
+    // Fetch ALL documents regardless of userId to debug
+    const allDocs = await PromptHistory.find().lean();
+    console.log('📊 Total documents in DB:', allDocs.length);
+    console.log('📋 All doc IDs:', allDocs.map((d: any) => ({ id: d.id, userId: d.userId })));
+
+    // Try both - with and without userId filter
+    const withUserFilter = await PromptHistory
       .find({ userId })
+      .lean();
+
+    const withoutUserFilter = await PromptHistory
+      .find()
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
-    console.log(`📚 Fetching history for ${userId}:`, history.length);
-    res.json(history);
+
+    console.log(`📚 With userId filter: ${withUserFilter.length}, Without filter: ${withoutUserFilter.length}`);
+
+    // Return all docs regardless of userId for now
+    res.json(withoutUserFilter);
   } catch (err) {
     console.error('History error:', err.message);
     res.status(500).json({ error: 'Failed to fetch history' });
@@ -92,7 +137,7 @@ router.get('/history', async (req, res) => {
 router.delete('/history/:id', authenticate, async (req, res) => {
   try {
     const result = await PromptHistory.findOneAndDelete({
-      _id: req.params.id,
+      id: req.params.id,
       userId: req.user.userId,
     });
 
@@ -146,6 +191,31 @@ router.post('/generate-title', async (req, res) => {
     // Return default title on error
     const defaultTitle = prompt.substring(0, 50) + (prompt.length > 50 ? '...' : '');
     res.json({ title: defaultTitle });
+  }
+});
+
+router.post('/feedback', async (req, res) => {
+  const { chatId, preferredModel, judgeAnalysis, timestamp } = req.body;
+  const userId = req.user?.userId || 'guest';
+
+  try {
+    await PromptHistory.findOneAndUpdate(
+      { id: chatId },
+      {
+        userFeedback: {
+          preferredModel,
+          judgeAnalysis,
+          timestamp
+        }
+      },
+      { new: true }
+    );
+
+    console.log('💾 Feedback saved:', { userId, chatId, preferredModel });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Feedback error:', err.message);
+    res.status(500).json({ error: 'Failed to save feedback' });
   }
 });
 

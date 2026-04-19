@@ -9,7 +9,20 @@ const responseSchema = new mongoose.Schema({
   judgeScore: Number,
 }, { _id: false });
 
+const followUpSchema = new mongoose.Schema({
+  prompt: String,
+  responses: [responseSchema],
+  judgeData: {
+    bestIndex: Number,
+    reasoning: String,
+    scores: [Number],
+    analysis: String,
+  },
+  timestamp: { type: Date, default: Date.now }
+}, { _id: false });
+
 const historySchema = new mongoose.Schema({
+  id: { type: String, unique: true, sparse: true },
   userId: { type: String, required: true, index: true },
   prompt: { type: String, required: true },
   responses: [responseSchema],
@@ -19,6 +32,7 @@ const historySchema = new mongoose.Schema({
     scores: [Number],
     analysis: String,
   },
+  followUps: [followUpSchema]
 }, { timestamps: true });
 
 // Index for efficient querying

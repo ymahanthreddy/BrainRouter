@@ -51,6 +51,14 @@ export default function App() {
 
     // Load chat history from database
     loadChatHistory();
+
+    // Restore selected chat from localStorage
+    const savedSelectedId = localStorage.getItem('br_selected_chat_id');
+    if (savedSelectedId) {
+      setTimeout(() => {
+        handleSelectChat(savedSelectedId);
+      }, 100);
+    }
   }, []);
 
   // Load chat history from database
@@ -59,52 +67,57 @@ export default function App() {
       console.log('🔄 Fetching chat history from DB...');
       const response = await fetch('/api/ai/history');
       console.log('📡 API response status:', response.status);
+      console.log('📡 Response headers:', response.headers);
 
-      if (response.ok) {
-        const data = await response.json();
-        console.log('📚 Raw data from API:', data);
-
-        if (!data || (Array.isArray(data) && data.length === 0)) {
-          console.log('⚠️ API returned empty data, checking localStorage...');
-          const saved = localStorage.getItem('br_chat_history');
-          if (saved) {
-            const parsed = JSON.parse(saved);
-            console.log('📚 Loaded from localStorage:', parsed.length, 'chats');
-            setChatHistory(parsed);
-            return;
-          }
-          setChatHistory([]);
-          return;
-        }
-
-        // Handle both array and object responses
-        let history = Array.isArray(data) ? data : (data.history || data || []);
-
-        if (!Array.isArray(history)) {
-          console.error('❌ History is not an array:', history);
-          history = [];
-        }
-
-        // Map MongoDB _id to id field and generate title from prompt if missing
-        history = history.map((chat: any) => {
-          if (!chat) return null;
-          return {
-            ...chat,
-            id: chat.id || chat._id || Date.now().toString(),
-            title: chat.title || (chat.prompt ? chat.prompt.substring(0, 50) + (chat.prompt.length > 50 ? "..." : "") : "Untitled"),
-            prompt: chat.prompt || '',
-            createdAt: chat.createdAt || new Date().toISOString(),
-          };
-        }).filter(Boolean);
-
-        console.log('✅ Processed history:', history.length, 'chats', history);
-        setChatHistory(history);
-        localStorage.setItem('br_chat_history', JSON.stringify(history));
-        console.log('💾 Saved to localStorage:', history.length, 'chats');
-      } else {
-        console.log('⚠️ API Error:', response.status, response.statusText);
+      if (!response.ok) {
+        console.error('❌ API Error:', response.status, response.statusText);
         throw new Error(`API Error: ${response.status}`);
       }
+
+      const data = await response.json();
+      console.log('📚 Raw data from API:', data);
+
+      // Handle both array and object responses
+      let history = Array.isArray(data) ? data : (data.history || data || []);
+
+      if (!Array.isArray(history)) {
+        console.error('❌ History is not an array:', history);
+        history = [];
+      }
+
+      // Map MongoDB _id to id field and generate title from prompt if missing
+      history = history.map((chat: any) => {
+        if (!chat) return null;
+        return {
+          ...chat,
+          id: chat.id || chat._id || Date.now().toString(),
+          title: chat.title || (chat.prompt ? chat.prompt.substring(0, 50) + (chat.prompt.length > 50 ? "..." : "") : "Untitled"),
+          prompt: chat.prompt || '',
+          createdAt: chat.createdAt || new Date().toISOString(),
+        };
+      }).filter(Boolean);
+
+      // Merge follow-ups from localStorage
+      const savedLocal = localStorage.getItem('br_chat_history');
+      if (savedLocal) {
+        try {
+          const localHistory = JSON.parse(savedLocal);
+          history = history.map(dbChat => {
+            const localChat = localHistory.find((c: any) => c.id === dbChat.id);
+            if (localChat && localChat.followUps) {
+              return { ...dbChat, followUps: localChat.followUps };
+            }
+            return dbChat;
+          });
+        } catch (e) {
+          console.error('Failed to merge localStorage follow-ups:', e);
+        }
+      }
+
+      console.log('✅ Processed history:', history.length, 'chats', history);
+      setChatHistory(history);
+      localStorage.setItem('br_chat_history', JSON.stringify(history));
+      console.log('💾 Saved to localStorage:', history.length, 'chats');
     } catch (error) {
       console.error('❌ Error loading history:', error);
       console.log('📚 Falling back to localStorage...');
@@ -141,6 +154,29 @@ export default function App() {
     setSelectedChatId(newChat.id);
   };
 
+  // Save follow-up prompt to localStorage
+  const saveFollowUpPrompt = (prompt: string, chatId: string, responses?: any[]) => {
+    console.log('💾 saveFollowUpPrompt:', { chatId, responsesLen: responses?.length });
+    const history = JSON.parse(localStorage.getItem('br_chat_history') || '[]');
+    console.log('📚 IDs in localStorage:', history.map((c: any) => c.id));
+    const chatIndex = history.findIndex((c: ChatItem) => c.id === chatId);
+    console.log('🔍 chatIndex:', chatIndex);
+    if (chatIndex !== -1) {
+      if (!history[chatIndex].followUps) {
+        history[chatIndex].followUps = [];
+      }
+      history[chatIndex].followUps.push({
+        prompt,
+        responses: responses || [],
+        timestamp: new Date().toISOString()
+      });
+      localStorage.setItem('br_chat_history', JSON.stringify(history));
+      console.log('✅ Saved:', history[chatIndex].followUps.length, 'follow-ups');
+    } else {
+      console.error('❌ Chat NOT found for:', chatId);
+    }
+  };
+
   const handleLoginSuccess = (token: string, username: string, email: string) => {
     setUser({ name: username, email });
     setIsLoggedIn(true);
@@ -169,6 +205,7 @@ export default function App() {
     console.log('🔍 handleSelectChat called with id:', id);
     setSelectedChatId(id);
     if (id) {
+      localStorage.setItem('br_selected_chat_id', id);
       const chat = chatHistory.find(c => c.id === id);
       console.log('🔎 Found chat:', chat);
       if (chat) {
@@ -178,6 +215,7 @@ export default function App() {
           prompt: chat.prompt,
           responses: chat.responses || [],
           judgeAnalysis: chat.judgeAnalysis || '',
+          followUps: chat.followUps || []
         };
         console.log('📤 Setting activeResponse:', response);
         setActiveResponse(response);
@@ -185,6 +223,8 @@ export default function App() {
       } else {
         console.log('❌ Chat not found in history');
       }
+    } else {
+      localStorage.removeItem('br_selected_chat_id');
     }
   };
 
@@ -227,6 +267,7 @@ export default function App() {
         prompt,
         responses: [],
         judgeAnalysis: 'Thinking...',
+        followUps: []
       });
       setSelectedChatId(finalChatId);
     } else {
@@ -236,10 +277,30 @@ export default function App() {
     }
 
     try {
+      // Build conversation history for context
+      let conversationHistory = [];
+      if (chatId) {
+        const chat = chatHistory.find(c => c.id === chatId);
+        if (chat && chat.responses && chat.responses.length > 0) {
+          // Add original prompt
+          conversationHistory.push({ role: 'user', content: chat.prompt });
+          // Add previous best response
+          const topResponse = chat.responses.sort((a: any, b: any) => b.score - a.score)[0];
+          if (topResponse) {
+            conversationHistory.push({ role: 'assistant', content: topResponse.text });
+          }
+        }
+      }
+
       const response = await fetch("/api/ai/compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, ...(chatId ? { chatId } : {}) }),
+        body: JSON.stringify({
+          prompt,
+          ...(chatId ? { chatId } : {}),
+          id: finalChatId,
+          conversationHistory
+        }),
       });
 
       console.log('📡 API Response status:', response.status);
@@ -273,14 +334,15 @@ export default function App() {
       // Get existing chat for continuation
       const existingChat = chatHistory.find(c => c.id === finalChatId);
 
-      // Update with actual responses
+      // Update with actual responses (only for new chats, not continuations)
       const updatedChat: ChatItem = {
         id: finalChatId,
         title: smartTitle || (existingChat?.title || prompt.substring(0, 50)),
         prompt: existingChat?.prompt || prompt,
         createdAt: existingChat?.createdAt || new Date().toISOString(),
-        responses: data.responses || [],
-        judgeAnalysis: data.judgeAnalysis || '',
+        responses: isNewChat ? (data.responses || []) : (existingChat?.responses || []),
+        judgeAnalysis: isNewChat ? (data.judgeAnalysis || '') : (existingChat?.judgeAnalysis || ''),
+        followUps: existingChat?.followUps || []
       };
 
       // Update history
@@ -289,18 +351,30 @@ export default function App() {
       const finalUpdated = [updatedChat, ...filtered];
       localStorage.setItem('br_chat_history', JSON.stringify(finalUpdated));
       setChatHistory(finalUpdated);
-      console.log('✅ Chat updated with responses');
 
-      // Reload from DB
-      await loadChatHistory();
-
-      // Update ResponseWindow
-      setActiveResponse({
-        id: finalChatId,
-        prompt: existingChat?.prompt || prompt,
-        responses: data.responses || [],
-        judgeAnalysis: data.judgeAnalysis || '',
-      });
+      // Save follow-up with responses if it's a continuation
+      if (!isNewChat) {
+        saveFollowUpPrompt(prompt, finalChatId, data.responses);
+        // Reload chat to get updated followUps
+        const updated = JSON.parse(localStorage.getItem('br_chat_history') || '[]');
+        const chat = updated.find((c: ChatItem) => c.id === finalChatId);
+        setActiveResponse({
+          id: finalChatId,
+          prompt: chat?.prompt || prompt,
+          responses: data.responses || [],
+          judgeAnalysis: data.judgeAnalysis || '',
+          followUps: chat?.followUps || []
+        });
+      } else {
+        console.log('✅ Chat updated with responses');
+        setActiveResponse({
+          id: finalChatId,
+          prompt: existingChat?.prompt || prompt,
+          responses: data.responses || [],
+          judgeAnalysis: data.judgeAnalysis || '',
+          followUps: existingChat?.followUps || []
+        });
+      }
     } catch (error) {
       console.error("❌ Error:", error);
       setActiveResponse(prev => prev ? {
@@ -357,6 +431,7 @@ export default function App() {
           onMinimizedChange={setSidebarMinimized}
           onDeleteChat={handleDeleteChat}
           onRefresh={loadChatHistory}
+          isViewingChat={!!activeResponse}
         />
 
         {/* Main Content */}

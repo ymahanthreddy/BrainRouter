@@ -11,13 +11,15 @@ const RESPONSE_MODELS = [
 
 const JUDGE_MODEL = 'deepseek/deepseek-chat-v3.1';
 
-async function callModel(modelId, prompt, temperature = 0.7) {
+async function callModel(modelId, prompt, temperature = 0.7, conversationHistory = []) {
   try {
+    const messages = [...conversationHistory, { role: 'user', content: prompt }];
+
     const res = await axios.post(
       OPENROUTER_URL,
       {
         model: modelId,
-        messages: [{ role: 'user', content: prompt }],
+        messages: messages,
         temperature: temperature,
       },
       {
@@ -37,11 +39,11 @@ async function callModel(modelId, prompt, temperature = 0.7) {
   }
 }
 
-export async function queryAllModels(prompt) {
+export async function queryAllModels(prompt, conversationHistory = []) {
   try {
     const results = await Promise.allSettled(
       RESPONSE_MODELS.map(async ({ id, name }) => {
-        const text = await callModel(id, prompt);
+        const text = await callModel(id, prompt, 0.7, conversationHistory);
         return { name, text, modelId: id };
       })
     );
